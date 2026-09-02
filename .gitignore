@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# whoop-demand project files
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+*.zip
+
+# OS / editor
+.DS_Store

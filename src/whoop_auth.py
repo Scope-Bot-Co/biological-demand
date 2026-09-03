@@ -18,7 +18,7 @@ AUTHORIZE_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 
 # read:recovery / read:cycles -> data we will fetch later
-SCOPES = "offline read:recovery read:cycles"
+SCOPES = "offline read:recovery read:cycles read:sleep read:workout"
 
 DEFAULT_REDIRECT_URI = "http://localhost:8000/callback"
 

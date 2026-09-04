@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import sys
 import urllib.error
 import urllib.parse
@@ -14,6 +15,10 @@ from whoop_auth import TOKEN_PATH, get_valid_access_token
 
 
 API_BASE = "https://api.prod.whoop.com/developer"
+
+ROOT = Path(__file__).resolve().parent.parent
+RAW_DIR = ROOT / "data" / "raw"
+DAILY_CSV = ROOT / "data" / "processed" / "daily.csv"
 
 # calculates previous day time range in UTC -> returns start time, end time, and date
 def yesterday_window() -> tuple[str, str, str]:
@@ -82,6 +87,11 @@ def ms_to_hr(value: object) -> str:
         return "n/a"
     return f"{int(value) / 3_600_000:.2f}h"
 
+def hr_from_ms(value: object) -> float | None:
+    if value is None:
+        return None
+    return round(int(value) / 3_600_000, 2)
+
 # reformat WHOOP recovery obj 
 def summarize_recovery(record: dict) -> str:
     score = record.get("score") or {}
@@ -141,15 +151,83 @@ def summarize_workout(record: dict) -> str:
         f"start: {record.get('start')}"
     )
 
+def build_day(date: str, recovery: dict, cycle: dict | None, sleep: dict | None, workouts: list[dict]) -> dict:
+    return {
+        "date": date,
+        "recovery": recovery,
+        "cycle": cycle,
+        "sleep": sleep,
+        "workouts": workouts,
+    }
+
+
+def save_raw_day(day: dict) -> Path:
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    path = RAW_DIR / f"{day['date']}.json"
+    path.write_text(json.dumps(day, indent=2) + "\n")
+    return path
+
+
+def flatten_day(day: dict) -> dict:
+    recovery = day.get("recovery") or {}
+    cycle = day.get("cycle") or {}
+    sleep = day.get("sleep") or {}
+    workouts = day.get("workouts") or []
+
+    recovery_score = recovery.get("score") or {}
+    cycle_score = cycle.get("score") or {}
+    sleep_score = sleep.get("score") or {}
+    stages = sleep_score.get("stage_summary") or {}
+
+    workout_strain = 0.0
+    for workout in workouts:
+        score = workout.get("score") or {}
+        if score.get("strain") is not None:
+            workout_strain += float(score["strain"])
+
+    return {
+        "date": day.get("date"),
+        "recovery_score": recovery_score.get("recovery_score"),
+        "hrv_rmssd_milli": recovery_score.get("hrv_rmssd_milli"),
+        "resting_hr": recovery_score.get("resting_heart_rate"),
+        "spo2_percentage": recovery_score.get("spo2_percentage"),
+        "skin_temp_celsius": recovery_score.get("skin_temp_celsius"),
+        "strain": cycle_score.get("strain"),
+        "sleep_performance": sleep_score.get("sleep_performance_percentage"),
+        "sleep_hours": hr_from_ms(stages.get("total_in_bed_time_milli")),
+        "workout_count": len(workouts),
+        "workout_strain": round(workout_strain, 2),
+    }
+
+
+def save_daily_row(row: dict) -> Path:
+    DAILY_CSV.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(row.keys())
+
+    rows = []
+    if DAILY_CSV.exists():
+        with DAILY_CSV.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+    rows = [existing for existing in rows if existing.get("date") != row["date"]]
+    rows.append({name: row.get(name) for name in fieldnames})
+    rows.sort(key=lambda item: item.get("date") or "")
+
+    with DAILY_CSV.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return DAILY_CSV
 
 def main() -> int:
     print("token file:", TOKEN_PATH)
-    access_token = get_valid_access_token() # get access token -> whoop_auth.py
-    start, end, yesterday = yesterday_window() # calculate previous day window -> start, end, date
+    access_token = get_valid_access_token()
+    start, end, yesterday = yesterday_window()
     print(f"window: {start} -> {end}")
     print(f"date: {yesterday}")
 
-    records = get_recoveries(access_token, start, end) # get data from WHOOP -> recovery data
+    records = get_recoveries(access_token, start, end)
     if not records:
         print("No recovery records in that window.")
         return 0
@@ -162,6 +240,9 @@ def main() -> int:
     sleep_id = recovery.get("sleep_id")
 
     cycle = None
+    sleep = None
+    workouts = []
+
     if cycle_id is None:
         print("\nNo cycle_id on this recovery; skipping cycle + workouts.")
     else:
@@ -185,8 +266,12 @@ def main() -> int:
             for workout in workouts:
                 print(summarize_workout(workout))
 
-        return 0
-
+    day = build_day(yesterday, recovery, cycle, sleep, workouts)
+    raw_path = save_raw_day(day)
+    csv_path = save_daily_row(flatten_day(day))
+    print(f"\nsaved raw: {raw_path}")
+    print(f"saved row: {csv_path}")
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
